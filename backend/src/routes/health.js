@@ -3,7 +3,7 @@ const pool = require("../config/db");
 
 const router = express.Router();
 
-router.get("/", async (_req, res) => {
+router.get("/", async (req, res) => {
   try {
     await pool.query("SELECT 1");
 
@@ -12,7 +12,7 @@ router.get("/", async (_req, res) => {
       database: "connected",
     });
   } catch (error) {
-    console.error("Database health check failed:", error.code || error.message);
+    console.error("Database health check failed:", error.message);
 
     return res.status(500).json({
       status: "error",

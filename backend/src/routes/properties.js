@@ -56,6 +56,30 @@ function parseDecimal(value, name, options = {}) {
   return parsed;
 }
 
+/**
+ * Validate listing ID path parameter.
+ * Current dataset uses numeric listing IDs.
+ */
+function validateListingId(id) {
+  if (typeof id !== "string" || id.trim().length === 0) {
+    return "Listing ID is required";
+  }
+
+  if (id.length > 50) {
+    return "Listing ID is too long";
+  }
+
+  if (!/^\d+$/.test(id)) {
+    return "Listing ID must contain only digits";
+  }
+
+  return null;
+}
+
+/**
+ * GET /api/properties
+ * Paginated property search with optional filters.
+ */
 router.get("/", async (req, res) => {
   try {
     const limit = parseInteger(req.query.limit, "limit", {
@@ -150,22 +174,18 @@ router.get("/", async (req, res) => {
       filterValues.push(maxPrice);
     }
 
-    // beds=3 means 3 or more bedrooms.
     if (beds !== undefined) {
       conditions.push("L_Keyword2 >= ?");
       filterValues.push(beds);
     }
 
-    // baths=2 means 2 or more bathrooms.
     if (baths !== undefined) {
       conditions.push("LM_Dec_3 >= ?");
       filterValues.push(baths);
     }
 
     const whereClause =
-      conditions.length > 0
-        ? `WHERE ${conditions.join(" AND ")}`
-        : "";
+      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
     const countSql = `
       SELECT COUNT(*) AS total
@@ -192,23 +212,11 @@ router.get("/", async (req, res) => {
       OFFSET ${offset}
     `;
 
-    /*
-     * Important:
-     * The count query receives only filter values.
-     * The properties query receives the same filters, followed by limit and offset.
-     *
-     * Using a copied array prevents pagination values from accidentally changing
-     * the count query parameters.
-     */
-
     const countValues = [...filterValues];
     const propertiesValues = [...filterValues];
 
     const [countRows] = await pool.execute(countSql, countValues);
-    const [properties] = await pool.execute(
-      propertiesSql,
-      propertiesValues
-    );
+    const [properties] = await pool.execute(propertiesSql, propertiesValues);
 
     return res.status(200).json({
       total: Number(countRows[0].total),
@@ -230,6 +238,109 @@ router.get("/", async (req, res) => {
 
     return res.status(500).json({
       error: "Unable to retrieve properties",
+    });
+  }
+});
+
+/**
+ * IMPORTANT:
+ * This route must come before GET /:id.
+ *
+ * If /:id came first, Express could treat:
+ * /1118422731/openhouses
+ * as a bad listing ID route instead of the openhouses route.
+ */
+router.get("/:id/openhouses", async (req, res) => {
+  const { id } = req.params;
+
+  const validationError = validateListingId(id);
+
+  if (validationError) {
+    return res.status(400).json({
+      error: validationError,
+    });
+  }
+
+  try {
+    const [propertyRows] = await pool.execute(
+      `
+        SELECT L_ListingID
+        FROM rets_property
+        WHERE L_ListingID = ?
+        LIMIT 1
+      `,
+      [id]
+    );
+
+    if (propertyRows.length === 0) {
+      return res.status(404).json({
+        error: `Property with listing ID ${id} was not found`,
+      });
+    }
+
+    const [openHouses] = await pool.execute(
+      `
+        SELECT
+          L_ListingID,
+          OpenHouseDate,
+          OH_StartTime,
+          OH_EndTime,
+          all_data
+        FROM rets_openhouse
+        WHERE L_ListingID = ?
+        ORDER BY OpenHouseDate ASC, OH_StartTime ASC
+      `,
+      [id]
+    );
+
+    return res.status(200).json(openHouses);
+  } catch (error) {
+    console.error(`Open houses lookup failed for listing ${id}:`, error);
+
+    return res.status(500).json({
+      error: "Unable to retrieve open houses",
+    });
+  }
+});
+
+/**
+ * GET /api/properties/:id
+ * Return one property by listing ID.
+ */
+router.get("/:id", async (req, res) => {
+  const { id } = req.params;
+
+  const validationError = validateListingId(id);
+
+  if (validationError) {
+    return res.status(400).json({
+      error: validationError,
+    });
+  }
+
+  try {
+    const [properties] = await pool.execute(
+      `
+        SELECT *
+        FROM rets_property
+        WHERE L_ListingID = ?
+        LIMIT 1
+      `,
+      [id]
+    );
+
+    if (properties.length === 0) {
+      return res.status(404).json({
+        error: `Property with listing ID ${id} was not found`,
+      });
+    }
+
+    return res.status(200).json(properties[0]);
+  } catch (error) {
+    console.error(`Property lookup failed for listing ${id}:`, error);
+
+    return res.status(500).json({
+      error: "Unable to retrieve property",
     });
   }
 });
